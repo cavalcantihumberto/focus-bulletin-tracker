@@ -10,6 +10,8 @@ Cobertura:
   - Criação de cache em disco
 """
 
+import sqlite3
+
 import pandas as pd
 import pytest
 import requests
@@ -108,7 +110,7 @@ def test_datas_em_ordem_cronologica():
 # ---------------------------------------------------------------------------
 
 def test_cache_criado_apos_busca(tmp_path, monkeypatch):
-    """Arquivo CSV de cache deve ser criado em disco após busca bem-sucedida."""
+    """Banco SQLite de cache deve ser criado e populado após busca bem-sucedida."""
     monkeypatch.setattr("data.fetcher.CACHE_DIR", tmp_path)
 
     registros = [
@@ -132,8 +134,18 @@ def test_cache_criado_apos_busca(tmp_path, monkeypatch):
     with patch("data.fetcher.requests.get", return_value=mock_resp):
         buscar_expectativas("IPCA", "2025", forcar_atualizacao=True)
 
-    cache_file = tmp_path / "IPCA_2025.csv"
-    assert cache_file.exists(), "Arquivo CSV de cache não foi criado"
+    db_file = tmp_path / "focus_cache.db"
+    assert db_file.exists(), "Banco SQLite de cache não foi criado"
 
-    df_cache = pd.read_csv(cache_file)
-    assert len(df_cache) == 5, f"Esperado 5 linhas no cache, obtido {len(df_cache)}"
+    conn = sqlite3.connect(str(db_file))
+    count = conn.execute(
+        "SELECT COUNT(*) FROM expectativas WHERE indicador='IPCA' AND ano_referencia='2025'"
+    ).fetchone()[0]
+    meta = conn.execute(
+        "SELECT total_registros FROM cache_metadata WHERE indicador='IPCA' AND ano_referencia='2025'"
+    ).fetchone()
+    conn.close()
+
+    assert count == 5, f"Esperado 5 registros em expectativas, obtido {count}"
+    assert meta is not None, "Registro ausente em cache_metadata"
+    assert meta[0] == 5, f"total_registros esperado 5, obtido {meta[0]}"
