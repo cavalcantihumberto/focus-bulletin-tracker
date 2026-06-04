@@ -129,6 +129,58 @@ All configuration is done interactively through the dashboard sidebar:
 
 ---
 
+## 🔄 Data Pipeline
+
+A GitHub Actions workflow automatically refreshes all indicator data every week.
+
+### Schedule
+
+Runs every **Monday at 12:00 UTC** (09:00 Brasília time).  
+Can also be triggered manually from the **Actions** tab → *Update Focus Bulletin Data* → **Run workflow**.
+
+### Run manually
+
+```bash
+python scripts/fetch_data.py
+```
+
+Fetches all 4 indicators × 8 years (2022–2029) directly from the BCB API and saves the results to `data/processed/`.
+
+### Generated files
+
+```
+data/processed/
+├── IPCA_2022.parquet          # historical expectations per indicator/year
+├── IPCA_2023.parquet
+├── ...
+├── Câmbio_2029.parquet
+└── metadata.json              # last update timestamp + record counts
+```
+
+**`metadata.json` structure:**
+```json
+{
+  "ultima_atualizacao": "2026-06-04T12:00:00Z",
+  "versao_script": "1.0.0",
+  "registros": {
+    "IPCA/2025": 220,
+    "Selic/2025": 218
+  }
+}
+```
+
+### Cache priority in the dashboard
+
+The dashboard (`app.py`) resolves data in this order:
+
+| Priority | Source | Validity |
+|----------|--------|---------|
+| 1 | `data/processed/*.parquet` | 7 days |
+| 2 | `cache/focus_cache.db` (SQLite) | 24 hours |
+| 3 | BCB Olinda API (live) | always fresh |
+
+---
+
 ## 📄 License
 
 [MIT](LICENSE) — free to use, modify, and distribute.

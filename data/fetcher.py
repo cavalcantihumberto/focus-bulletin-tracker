@@ -44,7 +44,9 @@ CAMPOS_TOP5 = [
 ]
 
 CACHE_DIR = Path(__file__).parent.parent / "cache"
+PROCESSED_DIR = Path(__file__).parent.parent / "data" / "processed"
 CACHE_EXPIRY_HOURS = 24
+PARQUET_MAX_AGE_DAYS = 7
 
 INDICADORES = {
     "IPCA": "IPCA",
@@ -172,6 +174,30 @@ def _salvar_cache(df: pd.DataFrame, indicador: str, ano_referencia: str) -> None
             )
 
 
+def _parquet_path(indicador: str, ano_referencia: str) -> Path:
+    return PROCESSED_DIR / f"{indicador.replace(' ', '_')}_{ano_referencia}.parquet"
+
+
+def _tentar_ler_parquet(indicador: str, ano_referencia: str):
+    """
+    Tenta ler o Parquet pré-gerado pelo pipeline. Retorna None se:
+    - O arquivo não existe
+    - O arquivo tem mais de PARQUET_MAX_AGE_DAYS dias
+    - Ocorre qualquer erro de leitura (fallback automático)
+    """
+    path = _parquet_path(indicador, ano_referencia)
+    if not path.exists():
+        return None
+    modificado = datetime.fromtimestamp(path.stat().st_mtime)
+    if datetime.now() - modificado >= timedelta(days=PARQUET_MAX_AGE_DAYS):
+        return None
+    try:
+        return pd.read_parquet(path)
+    except Exception as e:
+        logger.warning("Falha ao ler Parquet %s: %s — usando fallback", path.name, e)
+        return None
+
+
 def _serializar_linha(row: pd.Series) -> dict:
     d = {}
     for col, val in row.items():
@@ -212,12 +238,25 @@ def buscar_expectativas(
         "forçado" if forcar_atualizacao else "com cache",
     )
 
-    if not forcar_atualizacao and _cache_valido(indicador, ano_referencia):
-        df = _ler_cache(indicador, ano_referencia)
-        logger.info("Cache hit: %s/%s — %d registros", indicador, ano_referencia, len(df))
-        return df
-
     if not forcar_atualizacao:
+        # Prioridade 1 — Parquet pré-gerado pelo pipeline (< 7 dias)
+        df_parquet = _tentar_ler_parquet(indicador, ano_referencia)
+        if df_parquet is not None:
+            logger.info(
+                "Parquet hit: %s/%s — %d registros [fonte: parquet]",
+                indicador, ano_referencia, len(df_parquet),
+            )
+            return df_parquet
+
+        # Prioridade 2 — SQLite (cache de 24h)
+        if _cache_valido(indicador, ano_referencia):
+            df = _ler_cache(indicador, ano_referencia)
+            logger.info(
+                "Cache hit: %s/%s — %d registros [fonte: sqlite]",
+                indicador, ano_referencia, len(df),
+            )
+            return df
+
         logger.warning("Cache expirado ou ausente: %s/%s — buscando da API", indicador, ano_referencia)
 
     filtro = f"Indicador eq '{indicador}' and DataReferencia eq '{ano_referencia}'"
