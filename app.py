@@ -10,6 +10,9 @@ from datetime import datetime
 
 from data.fetcher import buscar_expectativas, limpar_cache_disco, INDICADORES, anos_disponiveis
 from analysis.metrics import calcular_pipeline_completo, resumo_estatistico, ultimas_semanas
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -418,6 +421,13 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+if "app_logged_init" not in st.session_state:
+    logger.info(
+        "Dashboard iniciado — Focus Bulletin Tracker | %s",
+        datetime.now().strftime("%Y-%m-%d"),
+    )
+    st.session_state["app_logged_init"] = True
+
 # ── CSS customizado ───────────────────────────────────────────────────────────
 st.markdown(
     """
@@ -488,6 +498,8 @@ with st.sidebar:
 
     st.caption(f"Cache local: 24 h  |  {datetime.now().strftime('%d/%m/%Y %H:%M')}")
 
+logger.info("Seleção: %s / %s", indicador, ano_ref)
+
 # ── Cabeçalho principal ───────────────────────────────────────────────────────
 st.title("🇧🇷 Focus Bulletin Tracker")
 st.markdown(
@@ -514,6 +526,7 @@ with st.spinner(f"Buscando dados de {indicador} ({ano_ref})…"):
         st.stop()
 
 if df_raw.empty:
+    logger.warning("Nenhum dado retornado para %s/%s", indicador, ano_ref)
     st.warning(
         f"⚠️ Nenhum dado encontrado para **{indicador}** "
         f"com ano de referência **{ano_ref}** em nenhuma fonte disponível. "
@@ -662,7 +675,11 @@ fig1.update_layout(
     margin=dict(l=0, r=0, t=30, b=0),
 )
 
-st.plotly_chart(fig1, width="stretch")
+try:
+    st.plotly_chart(fig1, width="stretch")
+except Exception as _e:
+    logger.error("Erro ao renderizar gráfico de mediana (%s/%s): %s", indicador, ano_ref, _e, exc_info=True)
+    st.error("❌ Erro ao renderizar o gráfico de mediana.")
 
 # ── Gráfico 2: Banda de dispersão ─────────────────────────────────────────────
 st.subheader("🎯 Dispersão do Mercado")
@@ -762,7 +779,11 @@ fig2.update_layout(
     margin=dict(l=0, r=0, t=30, b=0),
 )
 
-st.plotly_chart(fig2, width="stretch")
+try:
+    st.plotly_chart(fig2, width="stretch")
+except Exception as _e:
+    logger.error("Erro ao renderizar gráfico de dispersão (%s/%s): %s", indicador, ano_ref, _e, exc_info=True)
+    st.error("❌ Erro ao renderizar o gráfico de dispersão.")
 
 # ── Gráfico 3: Revisões semanais ──────────────────────────────────────────────
 st.subheader("🔄 Revisões Semanais da Mediana")
@@ -824,7 +845,11 @@ if not df_rev.empty:
         margin=dict(l=0, r=0, t=30, b=0),
     )
 
-    st.plotly_chart(fig3, width="stretch")
+    try:
+        st.plotly_chart(fig3, width="stretch")
+    except Exception as _e:
+        logger.error("Erro ao renderizar gráfico de revisões (%s/%s): %s", indicador, ano_ref, _e, exc_info=True)
+        st.error("❌ Erro ao renderizar o gráfico de revisões.")
 else:
     st.info("ℹ️ Dados insuficientes para calcular revisões semanais no período selecionado.")
 

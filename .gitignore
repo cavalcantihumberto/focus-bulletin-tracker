@@ -28,5 +28,8 @@ cache/
 .DS_Store
 Thumbs.db
 
+# Logs (gerados em runtime, não versionados)
+logs/
+
 # Streamlit
 .streamlit/secrets.toml

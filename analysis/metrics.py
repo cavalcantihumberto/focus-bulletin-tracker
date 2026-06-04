@@ -6,6 +6,10 @@ Calcula revisões semanais, dispersão e métricas resumidas.
 import pandas as pd
 import numpy as np
 
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
 
 def calcular_revisoes(df: pd.DataFrame, coluna: str = "Mediana") -> pd.DataFrame:
     """
@@ -88,8 +92,28 @@ def calcular_pipeline_completo(
     if df.empty:
         return df
 
-    df = calcular_dispersao(df)
-    df = calcular_revisoes(df)
-    df = sinalizar_revisoes_relevantes(df, threshold=threshold_revisao)
+    indicador = df["Indicador"].iloc[0] if "Indicador" in df.columns else "?"
+    ano = df["DataReferencia"].iloc[0] if "DataReferencia" in df.columns else "?"
+    n = len(df)
+
+    logger.info("Calculando métricas: %s/%s — %d linhas", indicador, ano, n)
+
+    if n < 2:
+        logger.warning(
+            "DataFrame com %d linha(s) para %s/%s — revisão semanal não calculável",
+            n, indicador, ano,
+        )
+
+    try:
+        df = calcular_dispersao(df)
+        df = calcular_revisoes(df)
+        df = sinalizar_revisoes_relevantes(df, threshold=threshold_revisao)
+    except Exception as e:
+        logger.error(
+            "Erro inesperado no cálculo de métricas para %s/%s: %s",
+            indicador, ano, e,
+            exc_info=True,
+        )
+        raise
 
     return df

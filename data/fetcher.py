@@ -8,6 +8,7 @@ import math
 import sqlite3
 import ssl
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -18,16 +19,17 @@ import pandas as pd
 import requests
 import truststore
 
+from utils.logger import get_logger
+
 # Injeta o armazenamento de certificados do sistema operacional no ssl padrão.
 # Necessário para validar a cadeia ICP-Brasil usada pela API do BCB no Windows.
 truststore.inject_into_ssl()
 
 _SSL_VERIFY = True
+logger = get_logger(__name__)
 
 BASE_URL = "https://olinda.bcb.gov.br/olinda/servico/Expectativas/versao/v1/odata/"
 ENDPOINT = "ExpectativasMercadoAnuais"
-
-# Fallback para Câmbio 2028+
 ENDPOINT_TOP5 = "ExpectativasMercadoTop5Anuais"
 
 CAMPOS_TOP5 = [
@@ -63,7 +65,6 @@ CAMPOS = [
     "Maximo",
 ]
 
-# Lock global para serializar escritas concorrentes no banco SQLite
 _lock = threading.Lock()
 
 
@@ -77,7 +78,6 @@ def _db_conn():
     db_path = CACHE_DIR / "focus_cache.db"
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
-    # WAL permite leituras simultâneas durante uma escrita
     conn.execute("PRAGMA journal_mode=WAL")
     try:
         _criar_tabelas(conn)
@@ -91,7 +91,6 @@ def _db_conn():
 
 
 def _criar_tabelas(conn: sqlite3.Connection) -> None:
-    """Cria as tabelas e índice caso ainda não existam (idempotente)."""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS expectativas (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,7 +117,6 @@ def _criar_tabelas(conn: sqlite3.Connection) -> None:
 
 
 def _cache_valido(indicador: str, ano_referencia: str) -> bool:
-    """Retorna True se existe cache SQLite com menos de 24h para indicador+ano."""
     with _db_conn() as conn:
         row = conn.execute(
             "SELECT ultima_atualizacao FROM cache_metadata "
@@ -132,7 +130,6 @@ def _cache_valido(indicador: str, ano_referencia: str) -> bool:
 
 
 def _ler_cache(indicador: str, ano_referencia: str) -> pd.DataFrame:
-    """Reconstrói o DataFrame a partir dos payloads JSON armazenados no SQLite."""
     with _db_conn() as conn:
         rows = conn.execute(
             "SELECT payload FROM expectativas "
@@ -146,11 +143,9 @@ def _ler_cache(indicador: str, ano_referencia: str) -> pd.DataFrame:
 
 
 def _salvar_cache(df: pd.DataFrame, indicador: str, ano_referencia: str) -> None:
-    """Persiste o DataFrame no SQLite e atualiza cache_metadata."""
     agora = datetime.now().isoformat()
     with _lock:
         with _db_conn() as conn:
-            # Substitui registros anteriores do mesmo indicador+ano
             conn.execute(
                 "DELETE FROM expectativas WHERE indicador=? AND ano_referencia=?",
                 (indicador, ano_referencia),
@@ -178,14 +173,13 @@ def _salvar_cache(df: pd.DataFrame, indicador: str, ano_referencia: str) -> None
 
 
 def _serializar_linha(row: pd.Series) -> dict:
-    """Converte uma linha do DataFrame em dicionário JSON-serializável."""
     d = {}
     for col, val in row.items():
         if isinstance(val, pd.Timestamp):
             d[col] = val.strftime("%Y-%m-%d")
         elif isinstance(val, float) and math.isnan(val):
             d[col] = None
-        elif hasattr(val, "item"):  # numpy scalar → Python nativo
+        elif hasattr(val, "item"):
             d[col] = val.item()
         else:
             d[col] = val
@@ -209,18 +203,23 @@ def buscar_expectativas(
         ano_referencia   : Ano-alvo das projeções (ex: '2025')
         forcar_atualizacao: Se True, ignora o cache e consulta a API diretamente
 
-    Retorna:
-        DataFrame com colunas: Indicador, Data, DataReferencia, Mediana, Media,
-                                DesvioPadrao, Minimo, Maximo
-
     Lança:
         RuntimeError com mensagem amigável em caso de falha na API
     """
-    if not forcar_atualizacao and _cache_valido(indicador, ano_referencia):
-        return _ler_cache(indicador, ano_referencia)
+    logger.info(
+        "Iniciando busca: %s/%s [%s]",
+        indicador, ano_referencia,
+        "forçado" if forcar_atualizacao else "com cache",
+    )
 
-    # Monta URL com query string OData manualmente — o requests codificaria os '$' como '%24',
-    # o que faz a API BCB retornar 400. Construir a string diretamente preserva os literais.
+    if not forcar_atualizacao and _cache_valido(indicador, ano_referencia):
+        df = _ler_cache(indicador, ano_referencia)
+        logger.info("Cache hit: %s/%s — %d registros", indicador, ano_referencia, len(df))
+        return df
+
+    if not forcar_atualizacao:
+        logger.warning("Cache expirado ou ausente: %s/%s — buscando da API", indicador, ano_referencia)
+
     filtro = f"Indicador eq '{indicador}' and DataReferencia eq '{ano_referencia}'"
     qs = (
         f"$filter={quote(filtro)}"
@@ -230,6 +229,7 @@ def buscar_expectativas(
     )
     url = BASE_URL + ENDPOINT + "?" + qs
 
+    inicio = time.perf_counter()
     try:
         resposta = requests.get(url, timeout=30, verify=_SSL_VERIFY)
         resposta.raise_for_status()
@@ -250,6 +250,7 @@ def buscar_expectativas(
             "Verifique sua conexão com a internet."
         )
     except requests.exceptions.HTTPError as e:
+        logger.error("Erro HTTP %s ao acessar %s", resposta.status_code, url)
         raise RuntimeError(f"Erro HTTP ao acessar a API BCB: {e}")
     except ValueError:
         raise RuntimeError(
@@ -259,7 +260,13 @@ def buscar_expectativas(
     except Exception as e:
         raise RuntimeError(f"Erro inesperado ao acessar a API: {e}")
 
+    elapsed = time.perf_counter() - inicio
     registros = dados.get("value", [])
+
+    logger.info(
+        "API: %s/%s — %d registros em %.2fs",
+        indicador, ano_referencia, len(registros), elapsed,
+    )
 
     if not registros:
         if indicador == "Câmbio":
@@ -267,8 +274,20 @@ def buscar_expectativas(
         return pd.DataFrame(columns=CAMPOS)
 
     df = pd.DataFrame(registros)
+
+    if "baseCalculo" not in df.columns:
+        logger.warning(
+            "Coluna baseCalculo ausente no retorno da API para %s/%s",
+            indicador, ano_referencia,
+        )
+
     df = _limpar_dataframe(df)
-    _salvar_cache(df, indicador, ano_referencia)
+
+    try:
+        _salvar_cache(df, indicador, ano_referencia)
+    except Exception as e:
+        logger.error("Falha ao salvar cache para %s/%s: %s", indicador, ano_referencia, e)
+
     return df
 
 
@@ -280,8 +299,6 @@ def _limpar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Mantém apenas registros sem suavização (baseCalculo == 0 → dado padrão do Focus).
-    # A coluna pode estar ausente em endpoints alternativos (Top5Anuais).
     if "baseCalculo" in df.columns:
         df["baseCalculo"] = pd.to_numeric(df["baseCalculo"], errors="coerce")
         df = df[df["baseCalculo"] == 0]
@@ -296,14 +313,20 @@ def _limpar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 def _buscar_cambio_top5(ano_referencia: str, forcar_atualizacao: bool = False) -> pd.DataFrame:
     """
     Busca projeções anuais de Câmbio via ExpectativasMercadoTop5Anuais.
-
-    Usado como fallback quando ExpectativasMercadoAnuais não tem dados para o ano
-    solicitado. Filtra tipoCalculo='M' para evitar duplicatas.
+    Fallback quando ExpectativasMercadoAnuais não tem dados para o ano.
     """
     _KEY = "Câmbio_top5"
 
+    logger.info("Iniciando busca Top5: Câmbio/%s [%s]", ano_referencia,
+                "forçado" if forcar_atualizacao else "com cache")
+
     if not forcar_atualizacao and _cache_valido(_KEY, ano_referencia):
-        return _ler_cache(_KEY, ano_referencia)
+        df = _ler_cache(_KEY, ano_referencia)
+        logger.info("Cache hit (Top5): Câmbio/%s — %d registros", ano_referencia, len(df))
+        return df
+
+    if not forcar_atualizacao:
+        logger.warning("Cache expirado ou ausente (Top5): Câmbio/%s", ano_referencia)
 
     filtro = (
         f"Indicador eq 'Câmbio' and DataReferencia eq '{ano_referencia}'"
@@ -317,6 +340,7 @@ def _buscar_cambio_top5(ano_referencia: str, forcar_atualizacao: bool = False) -
     )
     url = BASE_URL + ENDPOINT_TOP5 + "?" + qs
 
+    inicio = time.perf_counter()
     try:
         resposta = requests.get(url, timeout=30, verify=_SSL_VERIFY)
         resposta.raise_for_status()
@@ -328,17 +352,27 @@ def _buscar_cambio_top5(ano_referencia: str, forcar_atualizacao: bool = False) -
     except requests.exceptions.ConnectionError:
         raise RuntimeError("Não foi possível conectar com a API do Banco Central.")
     except requests.exceptions.HTTPError as e:
+        logger.error("Erro HTTP %s ao acessar %s (Top5)", resposta.status_code, url)
         raise RuntimeError(f"Erro HTTP ao acessar a API BCB (Top5): {e}")
     except Exception as e:
         raise RuntimeError(f"Erro inesperado ao acessar a API (Top5): {e}")
 
+    elapsed = time.perf_counter() - inicio
     registros = dados.get("value", [])
+
+    logger.info("API Top5: Câmbio/%s — %d registros em %.2fs", ano_referencia, len(registros), elapsed)
+
     if not registros:
         return pd.DataFrame(columns=CAMPOS_TOP5)
 
     df = pd.DataFrame(registros)
     df = _limpar_dataframe(df)
-    _salvar_cache(df, _KEY, ano_referencia)
+
+    try:
+        _salvar_cache(df, _KEY, ano_referencia)
+    except Exception as e:
+        logger.error("Falha ao salvar cache Top5 para Câmbio/%s: %s", ano_referencia, e)
+
     return df
 
 
@@ -381,7 +415,6 @@ def limpar_cache_disco(indicador: str, ano_referencia: str) -> None:
                     (chave, ano_referencia),
                 )
 
-    # Limpa CSVs gerados pela versão anterior do cache (migração)
     for chave in chaves:
         csv_legado = CACHE_DIR / f"{chave.replace(' ', '_')}_{ano_referencia}.csv"
         if csv_legado.exists():
