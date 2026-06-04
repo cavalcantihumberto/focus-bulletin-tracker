@@ -415,6 +415,91 @@ def _buscar_cambio_top5(ano_referencia: str, forcar_atualizacao: bool = False) -
     return df
 
 
+def buscar_valores_realizados(indicador: str) -> pd.DataFrame:
+    """
+    Busca valores anuais realizados para IPCA (BCB série 13522),
+    Selic (BCB série 1178) ou PIB Total (IBGE agregado 1621).
+
+    Retorna DataFrame com colunas: ano (int), valor_realizado (float), fonte (str).
+    Filtra apenas anos completos (exclui ano corrente e futuros).
+    Em caso de falha na API retorna DataFrame vazio.
+    """
+    ano_atual = datetime.now().year
+    _EMPTY = pd.DataFrame(columns=["ano", "valor_realizado", "fonte"])
+
+    def _parse_bcb_dezembro(url: str, fonte: str) -> pd.DataFrame:
+        """Busca série BCB diária/mensal e retorna o último valor de dezembro de cada ano."""
+        resp = requests.get(url, timeout=30, verify=_SSL_VERIFY)
+        resp.raise_for_status()
+        por_ano: dict = {}
+        for item in resp.json():
+            try:
+                data = datetime.strptime(item["data"], "%d/%m/%Y")
+                valor = float(item["valor"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            if data.month != 12 or data.year >= ano_atual:
+                continue
+            if data.year not in por_ano or data > por_ano[data.year][0]:
+                por_ano[data.year] = (data, valor)
+        registros = [
+            {"ano": ano, "valor_realizado": v, "fonte": fonte}
+            for ano, (_, v) in sorted(por_ano.items())
+        ]
+        return pd.DataFrame(registros) if registros else _EMPTY
+
+    def _parse_bcb_anual(url: str, fonte: str) -> pd.DataFrame:
+        """Busca série BCB de frequência anual (data = 01/01/YYYY)."""
+        resp = requests.get(url, timeout=30, verify=_SSL_VERIFY)
+        resp.raise_for_status()
+        registros = []
+        for item in resp.json():
+            try:
+                ano = datetime.strptime(item["data"], "%d/%m/%Y").year
+                valor = float(item["valor"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            if ano >= ano_atual:
+                continue
+            registros.append({"ano": ano, "valor_realizado": valor, "fonte": fonte})
+        return pd.DataFrame(registros) if registros else _EMPTY
+
+    try:
+        if indicador == "IPCA":
+            # Série 13522: IPCA acumulado no ano — frequência mensal, filtrar dezembro
+            url = "https://api.bcb.gov.br/dados/serie/bcdata.sgs.13522/dados?formato=json"
+            return _parse_bcb_dezembro(url, "BCB SGS 13522")
+
+        elif indicador == "Selic":
+            # Série 432: meta Selic % a.a. — frequência diária, janela de 6 anos
+            # (9 anos excede o tempo de resposta aceitável para série diária)
+            data_ini = f"01/01/{ano_atual - 6}"
+            data_fim = f"31/12/{ano_atual - 1}"
+            url = (
+                "https://api.bcb.gov.br/dados/serie/bcdata.sgs.432/dados"
+                f"?formato=json&dataInicial={data_ini}&dataFinal={data_fim}"
+            )
+            return _parse_bcb_dezembro(url, "BCB SGS 432")
+
+        elif indicador in ("PIB Total", "PIB"):
+            # Série 7326: variação anual real do PIB (frequência anual, data = 01/01/YYYY)
+            data_ini = f"01/01/{ano_atual - 9}"
+            data_fim = f"31/12/{ano_atual - 1}"
+            url = (
+                "https://api.bcb.gov.br/dados/serie/bcdata.sgs.7326/dados"
+                f"?formato=json&dataInicial={data_ini}&dataFinal={data_fim}"
+            )
+            return _parse_bcb_anual(url, "BCB SGS 7326")
+
+        else:
+            logger.warning("buscar_valores_realizados: indicador '%s' não suportado", indicador)
+            return _EMPTY
+
+    except Exception as e:
+        logger.warning("Falha ao buscar valores realizados para %s: %s", indicador, e)
+        return _EMPTY
+
+
 def buscar_multiplos_anos(
     indicador: str,
     anos: list,

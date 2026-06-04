@@ -8,8 +8,20 @@ import plotly.graph_objects as go
 import pandas as pd
 from datetime import datetime
 
-from data.fetcher import buscar_expectativas, limpar_cache_disco, INDICADORES, anos_disponiveis
-from analysis.metrics import calcular_pipeline_completo, resumo_estatistico, ultimas_semanas
+from data.fetcher import (
+    buscar_expectativas,
+    buscar_multiplos_anos,
+    buscar_valores_realizados,
+    limpar_cache_disco,
+    INDICADORES,
+    anos_disponiveis,
+)
+from analysis.metrics import (
+    calcular_pipeline_completo,
+    calcular_erro_consenso,
+    resumo_estatistico,
+    ultimas_semanas,
+)
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -18,6 +30,64 @@ logger = get_logger(__name__)
 @st.cache_data(ttl=86400, show_spinner=False)
 def _buscar_dados(indicador: str, ano_ref: str) -> pd.DataFrame:
     return buscar_expectativas(indicador, ano_ref)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _buscar_todos_anos(indicador: str) -> pd.DataFrame:
+    ano_atual = datetime.now().year
+    anos = [str(a) for a in range(2022, ano_atual)]
+    return buscar_multiplos_anos(indicador, anos)
+
+
+@st.cache_data(ttl=86400 * 7, show_spinner=False)
+def _buscar_realizados(indicador: str) -> pd.DataFrame:
+    return buscar_valores_realizados(indicador)
+
+
+def get_erro_consenso_content(indicador: str) -> str:
+    ind = "PIB" if indicador.startswith("PIB") else indicador
+    conteudo = {
+        "IPCA": """
+**O que mostra:** compara o que o mercado projetava com o IPCA que efetivamente ocorreu. Erro positivo = mercado projetou inflação maior do que foi. Erro negativo = mercado subestimou a inflação.
+
+💼 **Assessores e CFP®:** se o erro histórico médio é negativo (mercado sistematicamente subestima o IPCA), isso sugere que projeções do Focus tendem a ser otimistas — considere um prêmio de segurança ao recomendar IPCA+ para clientes conservadores.
+
+📊 **Gestores de RPPS:** o erro absoluto médio é sua margem de incerteza histórica. Se a média é 1,5 pp, sua meta atuarial precisa de pelo menos essa folga em relação ao IPCA projetado para ser robusta a erros do consenso.
+
+🏦 **Economistas:** analise se o erro diminui conforme o horizonte encurta — se não diminui, o mercado não está incorporando informação nova de forma eficiente.
+
+🏢 **Empresas:** use o erro histórico para ajustar o orçamento de contratos IPCA+ — se o mercado subestima sistematicamente, adicione o erro médio histórico como buffer no seu planejamento.
+
+👤 **Pessoa Física:** se o mercado historicamente subestima o IPCA, o Tesouro IPCA+ protege melhor do que o Prefixado mesmo quando as taxas parecem equivalentes.
+""",
+        "Selic": """
+**O que mostra:** compara a Selic projetada pelo Focus com a Selic meta efetivamente definida pelo Copom ao final de cada ano.
+
+💼 **Assessores e CFP®:** erro positivo (mercado projetou Selic mais alta do que foi) significa que o mercado foi hawkish demais — quem travou prefixados quando o consenso estava pessimista ganhou. Use o histórico de erros para identificar esses momentos.
+
+📊 **Gestores de RPPS:** a Selic realizada vs projetada define o retorno efetivo da parcela pós-fixada vs o que você planejou. Erros sistemáticos impactam diretamente o ALM — ajuste as premissas de retorno esperado com base no erro histórico médio.
+
+🏦 **Economistas:** compare o erro da Selic com o erro do IPCA no mesmo ano. Se o mercado errou o IPCA mas acertou a Selic, o Copom foi mais previsível do que a inflação — ou vice-versa.
+
+🏢 **Empresas:** erro positivo na Selic (juros vieram menores) significa que o custo de dívida CDI foi menor do que o planejado — oportunidade de revisão de hedge retroativa para entender se o timing foi correto.
+
+👤 **Pessoa Física:** se o mercado historicamente projeta Selic mais alta do que realiza, isso significa que travar prefixados quando o Focus está pessimista tende a ser uma boa estratégia.
+""",
+        "PIB": """
+**O que mostra:** compara o crescimento do PIB projetado com o crescimento efetivo divulgado pelo IBGE.
+
+💼 **Assessores e CFP®:** erro negativo sistemático (mercado subestima o PIB) sugere que o Brasil cresce mais do que o esperado — contexto favorável para ativos de risco quando o consenso está pessimista.
+
+📊 **Gestores de RPPS:** PIB realizado acima do projetado geralmente significa arrecadação maior e contribuições mais estáveis — use o histórico de erros para calibrar o cenário conservador do fluxo de caixa do fundo.
+
+🏦 **Economistas:** analise a correlação entre erro do PIB e erro do IPCA — crescimento acima do esperado sem inflação acima do esperado indica ganhos de produtividade, o cenário mais favorável para política monetária.
+
+🏢 **Empresas:** erro negativo no PIB (economia cresceu mais do que o mercado esperava) valida estratégias de expansão mesmo quando o consenso era pessimista. Use o histórico para calibrar o quanto confiar nas projeções de mercado no planejamento estratégico.
+
+👤 **Pessoa Física:** mercado sistematicamente pessimista com o PIB significa que momentos de consenso negativo sobre a economia podem ser oportunidades de entrada em ativos de risco.
+""",
+    }
+    return conteudo.get(ind, "_Conteúdo não disponível para este indicador._")
 
 
 def get_expander_content(indicador: str, grafico: str) -> str:
@@ -899,6 +969,147 @@ if not df_tab.empty:
     st.dataframe(styled, width="stretch", hide_index=True)
 else:
     st.info("Nenhum dado disponível para exibição.")
+
+# ── Análise de Erro do Consenso ───────────────────────────────────────────────
+st.divider()
+st.subheader("🎯 Análise de Erro do Consenso")
+st.caption(
+    "Compara as medianas históricas do Focus com os valores efetivamente realizados"
+)
+
+if indicador == "Câmbio":
+    st.info(
+        "ℹ️ A análise de erro do consenso não está disponível para Câmbio. "
+        "A taxa de câmbio oscila continuamente ao longo do ano e não possui "
+        "um valor \"realizado\" oficial único comparável às projeções do Focus."
+    )
+else:
+    with st.spinner("Buscando valores realizados e histórico de projeções…"):
+        df_realizados_hist = _buscar_realizados(indicador)
+        df_historico_proj = _buscar_todos_anos(indicador)
+
+    if df_realizados_hist.empty:
+        st.warning(
+            "⚠️ Não foi possível obter valores realizados para este indicador. "
+            "Verifique sua conexão com a internet."
+        )
+    elif df_historico_proj.empty:
+        st.warning("⚠️ Sem histórico de projeções disponível para o cálculo.")
+    else:
+        df_erros = calcular_erro_consenso(df_historico_proj, df_realizados_hist)
+
+        if df_erros.empty:
+            st.info(
+                "ℹ️ Dados insuficientes para calcular o erro do consenso. "
+                "São necessários anos com projeções históricas e valor realizado disponível."
+            )
+        else:
+            # ── Cards de resumo ───────────────────────────────────────────────
+            erro_medio = df_erros["erro"].mean()
+            erro_abs_medio = df_erros["erro_absoluto"].mean()
+            vies = "Pessimista" if erro_medio > 0 else "Otimista"
+
+            col_e1, col_e2, col_e3 = st.columns(3)
+            with col_e1:
+                st.metric(
+                    label="Erro Médio Histórico",
+                    value=f"{erro_medio:+.2f} pp",
+                    help="Positivo = mercado superestimou; Negativo = subestimou",
+                )
+            with col_e2:
+                st.metric(
+                    label="Erro Absoluto Médio",
+                    value=f"{erro_abs_medio:.2f} pp",
+                    help="Magnitude média do erro, independente da direção",
+                )
+            with col_e3:
+                st.metric(
+                    label="Viés do Consenso",
+                    value=vies,
+                    help=(
+                        "Otimista = mercado subestimou sistematicamente (realizou acima do projetado). "
+                        "Pessimista = mercado superestimou (realizou abaixo do projetado)."
+                    ),
+                )
+
+            # ── Gráfico: erro médio por horizonte ─────────────────────────────
+            st.caption("Erro Médio por Horizonte de Projeção")
+
+            erros_h = (
+                df_erros.groupby("horizonte_semanas")["erro"]
+                .mean()
+                .reset_index()
+                .sort_values("horizonte_semanas", ascending=False)
+            )
+            labels_h = [str(h) for h in erros_h["horizonte_semanas"]]
+            cores_h = ["#e74c3c" if e > 0 else "#2ecc71" for e in erros_h["erro"]]
+
+            fig_err = go.Figure()
+            fig_err.add_trace(
+                go.Bar(
+                    x=labels_h,
+                    y=erros_h["erro"].tolist(),
+                    marker_color=cores_h,
+                    name="Erro médio",
+                    hovertemplate=(
+                        "<b>%{x} sem. antes</b><br>"
+                        "Erro médio: %{y:+.3f} pp<extra></extra>"
+                    ),
+                )
+            )
+            fig_err.add_hline(y=0, line_color="white", line_width=1, opacity=0.4)
+            fig_err.update_layout(
+                template="plotly_dark",
+                height=320,
+                xaxis_title="Semanas antes do final do ano",
+                yaxis_title="Erro médio (pp)",
+                showlegend=False,
+                margin=dict(l=0, r=0, t=20, b=0),
+                xaxis=dict(categoryorder="array", categoryarray=labels_h),
+            )
+
+            try:
+                st.plotly_chart(fig_err, width="stretch")
+            except Exception as _e:
+                logger.error(
+                    "Erro ao renderizar gráfico de erro do consenso (%s): %s",
+                    indicador, _e, exc_info=True,
+                )
+                st.error("❌ Erro ao renderizar o gráfico de erro do consenso.")
+
+            # ── Tabela: erro por ano (horizonte 52 semanas) ───────────────────
+            st.caption("Erro por Ano — horizonte de 52 semanas antes de 31/dezembro")
+
+            df_52 = df_erros[df_erros["horizonte_semanas"] == 52].copy()
+            if not df_52.empty:
+                df_tab_err = (
+                    df_52[["ano", "mediana_projetada", "valor_realizado", "erro", "erro_absoluto"]]
+                    .sort_values("ano", ascending=False)
+                    .reset_index(drop=True)
+                    .copy()
+                )
+                df_tab_err.columns = [
+                    "Ano", "Projeção (52 sem.)", "Realizado", "Erro (pp)", "Erro Absoluto",
+                ]
+                for col in ["Projeção (52 sem.)", "Realizado", "Erro (pp)", "Erro Absoluto"]:
+                    df_tab_err[col] = df_tab_err[col].round(2)
+
+                def _cor_err_col(val):
+                    if pd.isna(val):
+                        return ""
+                    if val > 0:
+                        return "color: #e74c3c; font-weight: bold"
+                    if val < 0:
+                        return "color: #2ecc71; font-weight: bold"
+                    return "color: #cccccc"
+
+                styled_err = df_tab_err.style.map(_cor_err_col, subset=["Erro (pp)"])
+                st.dataframe(styled_err, width="stretch", hide_index=True)
+            else:
+                st.info("ℹ️ Sem dados para o horizonte de 52 semanas.")
+
+            with st.expander("📖 Como ler esta análise?"):
+                st.markdown(get_erro_consenso_content(indicador))
 
 # ── Rodapé ────────────────────────────────────────────────────────────────────
 ultima_obs = df["Data"].max().strftime("%d/%m/%Y") if not df.empty else "—"

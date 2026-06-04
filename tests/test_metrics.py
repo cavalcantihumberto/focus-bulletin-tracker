@@ -16,6 +16,7 @@ import pytest
 
 from analysis.metrics import (
     calcular_dispersao,
+    calcular_erro_consenso,
     calcular_pipeline_completo,
     calcular_revisoes,
     resumo_estatistico,
@@ -90,3 +91,49 @@ def test_dados_vazios_nao_quebra():
 
     df_pipe = calcular_pipeline_completo(df_vazio)
     assert df_pipe.empty
+
+
+def test_erro_consenso_calculo_correto():
+    """Erro deve ser exatamente mediana_projetada - valor_realizado (tolerância 1e-9)."""
+    # Para 2022, 4 semanas antes de 31/dez = ~3/dez. Projeção em 01/dez (≤ alvo) = mediana 5.5
+    df_projecoes = pd.DataFrame({
+        "Indicador": ["IPCA"] * 3,
+        "Data": pd.to_datetime(["2022-01-07", "2022-06-03", "2022-12-01"]),
+        "DataReferencia": ["2022"] * 3,
+        "Mediana": [4.0, 5.0, 5.5],
+        "Media": [4.1, 5.1, 5.6],
+    })
+    df_realizados = pd.DataFrame({
+        "ano": [2022],
+        "valor_realizado": [5.79],
+        "fonte": ["test"],
+    })
+
+    resultado = calcular_erro_consenso(df_projecoes, df_realizados)
+
+    assert not resultado.empty, "Resultado não deve ser vazio"
+
+    row_4w = resultado[resultado["horizonte_semanas"] == 4]
+    assert not row_4w.empty, "Deve haver resultado para horizonte de 4 semanas"
+
+    esperado_erro = 5.5 - 5.79
+    obtido_erro = row_4w.iloc[0]["erro"]
+    assert abs(obtido_erro - esperado_erro) < 1e-9, (
+        f"Erro esperado {esperado_erro:.6f}, obtido {obtido_erro:.6f}"
+    )
+    assert abs(row_4w.iloc[0]["erro_absoluto"] - abs(esperado_erro)) < 1e-9
+
+
+def test_erro_consenso_sem_dados_realizados():
+    """Deve retornar DataFrame vazio sem levantar exceção quando df_realizados está vazio."""
+    df_projecoes = pd.DataFrame({
+        "Indicador": ["IPCA"],
+        "Data": pd.to_datetime(["2022-06-03"]),
+        "DataReferencia": ["2022"],
+        "Mediana": [4.5],
+        "Media": [4.6],
+    })
+    df_realizados = pd.DataFrame(columns=["ano", "valor_realizado", "fonte"])
+
+    resultado = calcular_erro_consenso(df_projecoes, df_realizados)
+    assert resultado.empty, "Deve retornar DataFrame vazio quando realizados está vazio"

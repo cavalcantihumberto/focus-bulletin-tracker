@@ -76,6 +76,72 @@ def ultimas_semanas(df: pd.DataFrame, n: int = 8) -> pd.DataFrame:
     return df.copy().sort_values("Data", ascending=False).head(n)
 
 
+def calcular_erro_consenso(
+    df_projecoes: pd.DataFrame,
+    df_realizados: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Compara medianas históricas do Focus com valores efetivamente realizados.
+
+    Para cada ano com valor realizado disponível, extrai a mediana projetada
+    nos horizontes 104, 78, 52, 26, 13 e 4 semanas antes de 31/dezembro do ano.
+
+    Retorna DataFrame com colunas:
+        ano, horizonte_semanas, data_projecao, mediana_projetada,
+        valor_realizado, erro, erro_absoluto
+    """
+    _COLS = [
+        "ano", "horizonte_semanas", "data_projecao",
+        "mediana_projetada", "valor_realizado", "erro", "erro_absoluto",
+    ]
+
+    if df_realizados.empty or df_projecoes.empty:
+        return pd.DataFrame(columns=_COLS)
+
+    HORIZONTES = [104, 78, 52, 26, 13, 4]
+
+    df_proj = df_projecoes.copy()
+    if not pd.api.types.is_datetime64_any_dtype(df_proj["Data"]):
+        df_proj["Data"] = pd.to_datetime(df_proj["Data"], errors="coerce")
+    df_proj = df_proj.dropna(subset=["Data", "Mediana"])
+
+    registros = []
+    for _, row_real in df_realizados.iterrows():
+        try:
+            ano = int(row_real["ano"])
+            valor_realizado = float(row_real["valor_realizado"])
+        except (ValueError, TypeError):
+            continue
+
+        data_ref = pd.Timestamp(f"{ano}-12-31")
+        df_ano = df_proj[df_proj["DataReferencia"].astype(str) == str(ano)]
+
+        if df_ano.empty:
+            continue
+
+        for horizonte in HORIZONTES:
+            data_alvo = data_ref - pd.Timedelta(weeks=horizonte)
+            df_antes = df_ano[df_ano["Data"] <= data_alvo]
+            if df_antes.empty:
+                continue
+
+            row_proj = df_antes.loc[df_antes["Data"].idxmax()]
+            mediana = float(row_proj["Mediana"])
+            erro = mediana - valor_realizado
+
+            registros.append({
+                "ano": ano,
+                "horizonte_semanas": horizonte,
+                "data_projecao": row_proj["Data"],
+                "mediana_projetada": mediana,
+                "valor_realizado": valor_realizado,
+                "erro": erro,
+                "erro_absoluto": abs(erro),
+            })
+
+    return pd.DataFrame(registros) if registros else pd.DataFrame(columns=_COLS)
+
+
 def calcular_pipeline_completo(
     df: pd.DataFrame,
     threshold_revisao: float = 0.1,
