@@ -14,6 +14,7 @@ from data.fetcher import (
     buscar_valores_realizados,
     limpar_cache_disco,
     INDICADORES,
+    UNIDADES,
     anos_disponiveis,
 )
 from analysis.metrics import (
@@ -39,8 +40,14 @@ def _buscar_todos_anos(indicador: str) -> pd.DataFrame:
     return buscar_multiplos_anos(indicador, anos)
 
 
-@st.cache_data(ttl=86400 * 7, show_spinner=False)
-def _buscar_realizados(indicador: str) -> pd.DataFrame:
+_REALIZADOS_VER = "v2"  # incrementar quando buscar_valores_realizados mudar para um indicador
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _buscar_realizados(indicador: str, _ver: str = _REALIZADOS_VER) -> pd.DataFrame:
+    # TTL curto (1h) para que resultados vazios por falha transitória não fiquem
+    # presos no cache por dias.  _ver é excluído da chave pelo Streamlit (prefixo _)
+    # mas muda o hash do código-fonte quando incrementado, forçando invalidação.
     return buscar_valores_realizados(indicador)
 
 
@@ -85,6 +92,23 @@ def get_erro_consenso_content(indicador: str) -> str:
 🏢 **Empresas:** erro negativo no PIB (economia cresceu mais do que o mercado esperava) valida estratégias de expansão mesmo quando o consenso era pessimista. Use o histórico para calibrar o quanto confiar nas projeções de mercado no planejamento estratégico.
 
 👤 **Pessoa Física:** mercado sistematicamente pessimista com o PIB significa que momentos de consenso negativo sobre a economia podem ser oportunidades de entrada em ativos de risco.
+""",
+        "Câmbio": """
+**O que mostra:** compara a mediana Focus do dólar (USD/BRL) com o valor realizado oficial do BCB (PTAX venda).
+
+**Metodologia do valor realizado:**
+- Anos ≤ 2020: cotação PTAX de fechamento do último dia útil de dezembro.
+- Anos ≥ 2021: média aritmética de todas as cotações PTAX de venda dos dias úteis de dezembro (metodologia adotada pelo BC em 19/01/2021).
+
+💼 **Assessores e CFP®:** erro positivo sistemático (Focus projetou dólar mais alto do que foi) indica que o mercado é conservador com o real — períodos de pessimismo cambial intenso podem ser janelas de compra de ativos locais. Use o histórico de erros para calibrar quanto desconto aplicar nas projeções do consenso.
+
+📊 **Gestores de RPPS:** o erro absoluto médio do câmbio define a margem de incerteza no retorno em BRL de ativos internacionais. Se a média histórica é 0,30 R\\$/USD, o VaR cambial precisa contemplar pelo menos essa faixa além do câmbio projetado.
+
+🏦 **Economistas:** compare o viés do câmbio com o viés do IPCA no mesmo período — se o mercado subestima o câmbio e subestima o IPCA simultaneamente, há um padrão de surpresas de oferta externa que os modelos macroeconômicos convencionais não capturam.
+
+🏢 **Empresas importadoras/exportadoras:** se o mercado sistematicamente projeta câmbio acima do realizado (viés pessimista com o real), contratos de hedge cambial travados no nível do consenso tendem a ser conservadores em excesso. Considere usar o erro médio histórico como ajuste nas simulações de break-even cambial.
+
+👤 **Pessoa Física:** mercado sistematicamente hawkish com o dólar significa que proteção cambial baseada apenas no consenso do Focus pode ser cara demais — diversifique gradualmente em vez de concentrar posições em momentos de pessimismo máximo.
 """,
     }
     return conteudo.get(ind, "_Conteúdo não disponível para este indicador._")
@@ -391,7 +415,7 @@ A trajetória do consenso de mercado para a taxa de câmbio USD/BRL no ano selec
 **Como usar — por perfil:**
 
 💼 **Assessores de Investimento e CFP®**
-Câmbio projetado em alta (real depreciando) é argumento direto para recomendar diversificação internacional. Exemplo: se a mediana projeta dólar a R$6,00 e o cliente tem 100% em ativos locais, ele está exposto à depreciação do real sem nenhuma proteção. Fundos cambiais, BDRs e ETFs internacionais são instrumentos acessíveis para essa proteção.
+Câmbio projetado em alta (real depreciando) é argumento direto para recomendar diversificação internacional. Exemplo: se a mediana projeta dólar a R\\$6,00 e o cliente tem 100% em ativos locais, ele está exposto à depreciação do real sem nenhuma proteção. Fundos cambiais, BDRs e ETFs internacionais são instrumentos acessíveis para essa proteção.
 
 📊 **Gestores de RPPS**
 A Resolução CMN 4.963 permite alocação em ativos no exterior dentro de limites específicos. Câmbio em tendência de alta é um dos argumentos técnicos para usar esse espaço regulatório. Documente a projeção do Focus como embasamento formal na ata do comitê de investimentos.
@@ -421,7 +445,7 @@ Banda larga no câmbio aumenta o risco de ativos internacionais na carteira. Se 
 Dispersão alta no câmbio combinada com dispersão alta na Selic indica crise de confiança sistêmica — o mercado não tem âncora nem em juros nem em câmbio. Cenário historicamente associado a episódios de fuga de capitais.
 
 🏢 **Empresas**
-A Amplitude entre Mínimo e Máximo é a sua margem de incerteza orçamentária em câmbio. Se a banda é de R$1,00, o custo de importação pode variar R$1,00 por dólar — dimensione o hedge para o cenário pessimista (Máximo), não para a Mediana.
+A Amplitude entre Mínimo e Máximo é a sua margem de incerteza orçamentária em câmbio. Se a banda é de R\\$1,00, o custo de importação pode variar R\\$1,00 por dólar — dimensione o hedge para o cenário pessimista (Máximo), não para a Mediana.
 
 👤 **Pessoa Física**
 Banda larga é sinal para não tentar adivinhar o timing do câmbio. Entre de forma gradual com aportes mensais em fundo cambial em vez de concentrar em uma única entrada.
@@ -583,6 +607,8 @@ st.markdown(
 if forcar:
     limpar_cache_disco(indicador, ano_ref)
     _buscar_dados.clear()
+    _buscar_realizados.clear()
+    _buscar_todos_anos.clear()
 
 with st.spinner(f"Buscando dados de {indicador} ({ano_ref})…"):
     try:
@@ -977,66 +1003,89 @@ st.caption(
     "Compara as medianas históricas do Focus com os valores efetivamente realizados"
 )
 
-if indicador == "Câmbio":
-    st.info(
-        "ℹ️ A análise de erro do consenso não está disponível para Câmbio. "
-        "A taxa de câmbio oscila continuamente ao longo do ano e não possui "
-        "um valor \"realizado\" oficial único comparável às projeções do Focus."
+with st.spinner("Buscando valores realizados e histórico de projeções…"):
+    df_realizados_hist = _buscar_realizados(indicador)
+    df_historico_proj = _buscar_todos_anos(indicador)
+
+if df_realizados_hist.empty:
+    st.warning(
+        f"⚠️ Sem dados realizados disponíveis para **{indicador}**. "
+        "Isso pode indicar falha temporária na API do BCB. "
+        "Clique em **🔄 Forçar Atualização** na sidebar para tentar novamente."
     )
+elif df_historico_proj.empty:
+    st.warning("⚠️ Sem histórico de projeções disponível para o cálculo.")
 else:
-    with st.spinner("Buscando valores realizados e histórico de projeções…"):
-        df_realizados_hist = _buscar_realizados(indicador)
-        df_historico_proj = _buscar_todos_anos(indicador)
+    df_erros = calcular_erro_consenso(df_historico_proj, df_realizados_hist)
 
-    if df_realizados_hist.empty:
-        st.warning(
-            "⚠️ Não foi possível obter valores realizados para este indicador. "
-            "Verifique sua conexão com a internet."
+    if df_erros.empty:
+        st.info(
+            "ℹ️ Dados insuficientes para calcular o erro do consenso. "
+            "São necessários anos com projeções históricas e valor realizado disponível."
         )
-    elif df_historico_proj.empty:
-        st.warning("⚠️ Sem histórico de projeções disponível para o cálculo.")
     else:
-        df_erros = calcular_erro_consenso(df_historico_proj, df_realizados_hist)
+        # ── Cards de resumo (agregados de todos os anos) ──────────────────
+        erro_medio = df_erros["erro"].mean()
+        erro_abs_medio = df_erros["erro_absoluto"].mean()
+        vies = "Pessimista" if erro_medio > 0 else "Otimista"
 
-        if df_erros.empty:
+        unidade = UNIDADES[indicador]
+
+        def _fmt_erro(valor: float, sinal: bool = True) -> str:
+            """Formata um valor de erro com a unidade do indicador.
+
+            IPCA/Selic/PIB → "{valor} pp"; Câmbio → "R$ {valor}".
+            """
+            num = f"{valor:+.2f}" if sinal else f"{valor:.2f}"
+            return f"R$ {num}" if unidade == "R$" else f"{num} {unidade}"
+
+        col_e1, col_e2, col_e3 = st.columns(3)
+        with col_e1:
+            st.metric(
+                label="Erro Médio Histórico",
+                value=_fmt_erro(erro_medio),
+                help="Positivo = mercado superestimou; Negativo = subestimou",
+            )
+        with col_e2:
+            st.metric(
+                label="Erro Absoluto Médio",
+                value=_fmt_erro(erro_abs_medio, sinal=False),
+                help="Magnitude média do erro, independente da direção",
+            )
+        with col_e3:
+            st.metric(
+                label="Viés do Consenso",
+                value=vies,
+                help=(
+                    "Otimista = mercado subestimou sistematicamente (realizou acima do projetado). "
+                    "Pessimista = mercado superestimou (realizou abaixo do projetado)."
+                ),
+            )
+
+        # ── Filtro por ano: gráfico e tabela refletem o ano_ref selecionado ─
+        try:
+            ano_sel = int(ano_ref)
+        except (TypeError, ValueError):
+            ano_sel = None
+
+        df_ano = (
+            df_erros[df_erros["ano"] == ano_sel]
+            if ano_sel is not None
+            else df_erros.iloc[0:0]
+        )
+
+        if df_ano.empty:
+            # Ano corrente/futuro ou qualquer ano sem valor realizado disponível.
             st.info(
-                "ℹ️ Dados insuficientes para calcular o erro do consenso. "
-                "São necessários anos com projeções históricas e valor realizado disponível."
+                f"ℹ️ Ainda não há valor realizado para **{ano_ref}**. "
+                "Selecione um ano encerrado (ex.: 2025) para ver o erro por horizonte."
             )
         else:
-            # ── Cards de resumo ───────────────────────────────────────────────
-            erro_medio = df_erros["erro"].mean()
-            erro_abs_medio = df_erros["erro_absoluto"].mean()
-            vies = "Pessimista" if erro_medio > 0 else "Otimista"
-
-            col_e1, col_e2, col_e3 = st.columns(3)
-            with col_e1:
-                st.metric(
-                    label="Erro Médio Histórico",
-                    value=f"{erro_medio:+.2f} pp",
-                    help="Positivo = mercado superestimou; Negativo = subestimou",
-                )
-            with col_e2:
-                st.metric(
-                    label="Erro Absoluto Médio",
-                    value=f"{erro_abs_medio:.2f} pp",
-                    help="Magnitude média do erro, independente da direção",
-                )
-            with col_e3:
-                st.metric(
-                    label="Viés do Consenso",
-                    value=vies,
-                    help=(
-                        "Otimista = mercado subestimou sistematicamente (realizou acima do projetado). "
-                        "Pessimista = mercado superestimou (realizou abaixo do projetado)."
-                    ),
-                )
-
-            # ── Gráfico: erro médio por horizonte ─────────────────────────────
-            st.caption("Erro Médio por Horizonte de Projeção")
+            # ── Gráfico: erro por horizonte (ano selecionado) ─────────────
+            st.caption(f"Erro por Horizonte de Projeção — {ano_ref}")
 
             erros_h = (
-                df_erros.groupby("horizonte_semanas")["erro"]
+                df_ano.groupby("horizonte_semanas")["erro"]
                 .mean()
                 .reset_index()
                 .sort_values("horizonte_semanas", ascending=False)
@@ -1044,16 +1093,18 @@ else:
             labels_h = [str(h) for h in erros_h["horizonte_semanas"]]
             cores_h = ["#e74c3c" if e > 0 else "#2ecc71" for e in erros_h["erro"]]
 
+            hover_val = "R$ %{y:+.3f}" if unidade == "R$" else "%{y:+.3f} " + unidade
+
             fig_err = go.Figure()
             fig_err.add_trace(
                 go.Bar(
                     x=labels_h,
                     y=erros_h["erro"].tolist(),
                     marker_color=cores_h,
-                    name="Erro médio",
+                    name="Erro",
                     hovertemplate=(
                         "<b>%{x} sem. antes</b><br>"
-                        "Erro médio: %{y:+.3f} pp<extra></extra>"
+                        "Erro: " + hover_val + "<extra></extra>"
                     ),
                 )
             )
@@ -1062,7 +1113,7 @@ else:
                 template="plotly_dark",
                 height=320,
                 xaxis_title="Semanas antes do final do ano",
-                yaxis_title="Erro médio (pp)",
+                yaxis_title=f"Erro ({unidade})",
                 showlegend=False,
                 margin=dict(l=0, r=0, t=20, b=0),
                 xaxis=dict(categoryorder="array", categoryarray=labels_h),
@@ -1072,15 +1123,16 @@ else:
                 st.plotly_chart(fig_err, width="stretch")
             except Exception as _e:
                 logger.error(
-                    "Erro ao renderizar gráfico de erro do consenso (%s): %s",
-                    indicador, _e, exc_info=True,
+                    "Erro ao renderizar gráfico de erro do consenso (%s/%s): %s",
+                    indicador, ano_ref, _e, exc_info=True,
                 )
                 st.error("❌ Erro ao renderizar o gráfico de erro do consenso.")
 
-            # ── Tabela: erro por ano (horizonte 52 semanas) ───────────────────
+            # ── Tabela: erro do ano selecionado (horizonte 52 semanas) ────
             st.caption("Erro por Ano — horizonte de 52 semanas antes de 31/dezembro")
 
-            df_52 = df_erros[df_erros["horizonte_semanas"] == 52].copy()
+            col_erro = f"Erro ({unidade})"
+            df_52 = df_ano[df_ano["horizonte_semanas"] == 52].copy()
             if not df_52.empty:
                 df_tab_err = (
                     df_52[["ano", "mediana_projetada", "valor_realizado", "erro", "erro_absoluto"]]
@@ -1089,9 +1141,9 @@ else:
                     .copy()
                 )
                 df_tab_err.columns = [
-                    "Ano", "Projeção (52 sem.)", "Realizado", "Erro (pp)", "Erro Absoluto",
+                    "Ano", "Projeção (52 sem.)", "Realizado", col_erro, "Erro Absoluto",
                 ]
-                for col in ["Projeção (52 sem.)", "Realizado", "Erro (pp)", "Erro Absoluto"]:
+                for col in ["Projeção (52 sem.)", "Realizado", col_erro, "Erro Absoluto"]:
                     df_tab_err[col] = df_tab_err[col].round(2)
 
                 def _cor_err_col(val):
@@ -1103,13 +1155,13 @@ else:
                         return "color: #2ecc71; font-weight: bold"
                     return "color: #cccccc"
 
-                styled_err = df_tab_err.style.map(_cor_err_col, subset=["Erro (pp)"])
+                styled_err = df_tab_err.style.map(_cor_err_col, subset=[col_erro])
                 st.dataframe(styled_err, width="stretch", hide_index=True)
             else:
-                st.info("ℹ️ Sem dados para o horizonte de 52 semanas.")
+                st.info("ℹ️ Sem dados para o horizonte de 52 semanas neste ano.")
 
-            with st.expander("📖 Como ler esta análise?"):
-                st.markdown(get_erro_consenso_content(indicador))
+        with st.expander("📖 Como ler esta análise?"):
+            st.markdown(get_erro_consenso_content(indicador))
 
 # ── Rodapé ────────────────────────────────────────────────────────────────────
 ultima_obs = df["Data"].max().strftime("%d/%m/%Y") if not df.empty else "—"

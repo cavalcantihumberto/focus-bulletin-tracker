@@ -20,7 +20,10 @@ from unittest.mock import MagicMock, patch
 from data.fetcher import (
     BASE_URL,
     ENDPOINT,
+    INDICADORES,
+    UNIDADES,
     buscar_expectativas,
+    buscar_valores_realizados,
     _limpar_dataframe,
 )
 
@@ -149,3 +152,94 @@ def test_cache_criado_apos_busca(tmp_path, monkeypatch):
     assert count == 5, f"Esperado 5 registros em expectativas, obtido {count}"
     assert meta is not None, "Registro ausente em cache_metadata"
     assert meta[0] == 5, f"total_registros esperado 5, obtido {meta[0]}"
+
+
+# ---------------------------------------------------------------------------
+# PTAX — metodologia de câmbio realizado
+# ---------------------------------------------------------------------------
+
+# Dados sintéticos: dias úteis de dezembro de 2020 e 2021 + um dia de 2026
+# (ano corrente para verificar exclusão)
+_MOCK_PTAX = [
+    # Dezembro 2020 — fechamento_dez: último valor = 5.1967
+    {"data": "28/12/2020", "valor": "5.2385"},
+    {"data": "29/12/2020", "valor": "5.1892"},
+    {"data": "31/12/2020", "valor": "5.1967"},
+    # Dezembro 2021 — media_dez: (5.6347 + 5.7021 + 5.5792) / 3
+    {"data": "29/12/2021", "valor": "5.6347"},
+    {"data": "30/12/2021", "valor": "5.7021"},
+    {"data": "31/12/2021", "valor": "5.5792"},
+    # Ano corrente (2026) — deve ser excluído
+    {"data": "01/12/2026", "valor": "6.0000"},
+]
+
+_MOCK_RESP_PTAX = MagicMock()
+_MOCK_RESP_PTAX.json.return_value = _MOCK_PTAX
+_MOCK_RESP_PTAX.raise_for_status.return_value = None
+
+
+def test_cambio_realizado_fechamento_dez():
+    """Ano <= 2020 deve usar fechamento_dez: último valor de dezembro."""
+    with patch("data.fetcher.requests.get", return_value=_MOCK_RESP_PTAX):
+        df = buscar_valores_realizados("Câmbio")
+
+    row = df[df["ano"] == 2020]
+    assert not row.empty, "Deve haver resultado para 2020"
+    assert row.iloc[0]["metodologia"] == "fechamento_dez", (
+        f"Esperado 'fechamento_dez', obtido '{row.iloc[0]['metodologia']}'"
+    )
+    assert abs(row.iloc[0]["valor_realizado"] - 5.1967) < 1e-4, (
+        f"Fechamento esperado 5.1967, obtido {row.iloc[0]['valor_realizado']}"
+    )
+
+
+def test_cambio_realizado_media_dez():
+    """Ano >= 2021 deve usar media_dez: média aritmética das cotações de dezembro."""
+    esperado = (5.6347 + 5.7021 + 5.5792) / 3
+
+    with patch("data.fetcher.requests.get", return_value=_MOCK_RESP_PTAX):
+        df = buscar_valores_realizados("Câmbio")
+
+    row = df[df["ano"] == 2021]
+    assert not row.empty, "Deve haver resultado para 2021"
+    assert row.iloc[0]["metodologia"] == "media_dez", (
+        f"Esperado 'media_dez', obtido '{row.iloc[0]['metodologia']}'"
+    )
+    assert abs(row.iloc[0]["valor_realizado"] - esperado) < 1e-4, (
+        f"Média esperada {esperado:.4f}, obtida {row.iloc[0]['valor_realizado']:.4f}"
+    )
+
+
+def test_cambio_realizado_exclui_ano_corrente():
+    """O ano corrente não deve aparecer no resultado."""
+    from datetime import datetime as _dt
+    ano_corrente = _dt.now().year
+
+    with patch("data.fetcher.requests.get", return_value=_MOCK_RESP_PTAX):
+        df = buscar_valores_realizados("Câmbio")
+
+    assert ano_corrente not in df["ano"].tolist(), (
+        f"Ano corrente {ano_corrente} não deveria estar no resultado"
+    )
+
+
+# ---------------------------------------------------------------------------
+# UNIDADES — mapa de unidade por indicador (exibição do erro do consenso)
+# ---------------------------------------------------------------------------
+
+def test_unidades_por_indicador():
+    """UNIDADES deve cobrir os mesmos indicadores e usar 'R$' p/ Câmbio, 'pp' p/ %."""
+    # Chaves idênticas às de INDICADORES (sem faltar nem sobrar)
+    assert set(UNIDADES.keys()) == set(INDICADORES.keys()), (
+        "UNIDADES deve cobrir exatamente os indicadores de INDICADORES; "
+        f"faltando: {set(INDICADORES) - set(UNIDADES)}, "
+        f"sobrando: {set(UNIDADES) - set(INDICADORES)}"
+    )
+    # Câmbio é R$/USD → 'R$'; os percentuais → 'pp'
+    assert UNIDADES["Câmbio"] == "R$", (
+        f"Esperado 'R$' para Câmbio, obtido '{UNIDADES['Câmbio']}'"
+    )
+    for ind in ("IPCA", "Selic", "PIB Total"):
+        assert UNIDADES[ind] == "pp", (
+            f"Esperado 'pp' para {ind}, obtido '{UNIDADES[ind]}'"
+        )

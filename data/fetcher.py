@@ -55,6 +55,15 @@ INDICADORES = {
     "Câmbio": "Câmbio",
 }
 
+# Unidade de medida por indicador, usada na exibição de erros do consenso.
+# IPCA/Selic/PIB são percentuais (pontos percentuais); Câmbio é em R$/USD.
+UNIDADES = {
+    "IPCA": "pp",
+    "Selic": "pp",
+    "PIB Total": "pp",
+    "Câmbio": "R$",
+}
+
 CAMPOS = [
     "Indicador",
     "Data",
@@ -490,6 +499,65 @@ def buscar_valores_realizados(indicador: str) -> pd.DataFrame:
                 f"?formato=json&dataInicial={data_ini}&dataFinal={data_fim}"
             )
             return _parse_bcb_anual(url, "BCB SGS 7326")
+
+        elif indicador == "Câmbio":
+            # Série 1: PTAX venda — cotações diárias de dias úteis
+            # Metodologia BC: corte em 19/01/2021
+            #   < 2021  → fechamento_dez : última cotação útil de dezembro
+            #   ≥ 2021  → media_dez     : média aritmética das cotações de dezembro
+            CORTE = 2021
+            data_ini = f"01/01/{ano_atual - 6}"
+            data_fim = f"31/12/{ano_atual - 1}"
+            url = (
+                "https://api.bcb.gov.br/dados/serie/bcdata.sgs.1/dados"
+                f"?formato=json&dataInicial={data_ini}&dataFinal={data_fim}"
+            )
+            resp = requests.get(url, timeout=30, verify=_SSL_VERIFY)
+            resp.raise_for_status()
+
+            # Agrupa cotações de dezembro por ano
+            por_ano: dict = {}
+            for item in resp.json():
+                try:
+                    data = datetime.strptime(item["data"], "%d/%m/%Y")
+                    valor = float(item["valor"])
+                except (ValueError, KeyError, TypeError):
+                    continue
+                if data.month != 12 or data.year >= ano_atual:
+                    continue
+                por_ano.setdefault(data.year, []).append((data, valor))
+
+            registros = []
+            for ano, cotacoes in sorted(por_ano.items()):
+                if ano < CORTE:
+                    _, val = max(cotacoes, key=lambda x: x[0])
+                    metodo = "fechamento_dez"
+                else:
+                    val = sum(v for _, v in cotacoes) / len(cotacoes)
+                    metodo = "media_dez"
+                registros.append({
+                    "ano": ano,
+                    "valor_realizado": round(val, 4),
+                    "fonte": "BCB SGS 1 - PTAX venda",
+                    "metodologia": metodo,
+                })
+                logger.debug(
+                    "Câmbio realizado %d: %.4f [%s, %d cotações]",
+                    ano, val, metodo, len(cotacoes),
+                )
+
+            if registros:
+                anos_v = [r["ano"] for r in registros]
+                logger.info(
+                    "Câmbio realizado: %d anos (%d–%d)",
+                    len(registros), min(anos_v), max(anos_v),
+                )
+
+            return (
+                pd.DataFrame(registros)
+                if registros
+                else pd.DataFrame(columns=["ano", "valor_realizado", "fonte", "metodologia"])
+            )
 
         else:
             logger.warning("buscar_valores_realizados: indicador '%s' não suportado", indicador)
