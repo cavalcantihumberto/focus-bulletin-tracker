@@ -1,10 +1,14 @@
 # 📊 Focus Bulletin Tracker
 
-[![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)](https://python.org)
-[![Streamlit](https://img.shields.io/badge/Streamlit-1.35-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io)
-[![Plotly](https://img.shields.io/badge/Plotly-5.22-3F4F75?logo=plotly&logoColor=white)](https://plotly.com)
+[![Python](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)](https://python.org)
+[![Streamlit](https://img.shields.io/badge/Streamlit-1.58-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io)
+[![Plotly](https://img.shields.io/badge/Plotly-6.8-3F4F75?logo=plotly&logoColor=white)](https://plotly.com)
 [![Data: BCB](https://img.shields.io/badge/Data-Banco%20Central%20do%20Brasil-009B3A)](https://www.bcb.gov.br)
 [![License: MIT](https://img.shields.io/badge/License-MIT-F7C948)](LICENSE)
+
+### 🔗 [**Open the live app →**](https://focus-bulletin-tracker.streamlit.app)
+
+![Focus Bulletin Tracker dashboard](docs/screenshot.png)
 
 An interactive Streamlit dashboard that tracks and visualizes the historical evolution of Brazil's **Focus Bulletin** market expectations, powered by the **Banco Central do Brasil (BCB) Olinda public API**.
 
@@ -23,14 +27,14 @@ An interactive Streamlit dashboard that tracks and visualizes the historical evo
 | **Chart 3** | Weekly revision bars (green = upward revision, red = downward) |
 | **Summary metrics** | Latest median, period variation, max dispersion, weeks analyzed |
 | **Last 8 weeks table** | Color-coded revision column (exceeds configurable threshold) |
-| **CSV cache** | 24-hour local cache to avoid redundant API calls |
+| **3-layer cache** | Pre-generated Parquet → 24h SQLite cache → live BCB API |
 | **Configurable threshold** | Slider to tune what counts as a "significant" revision |
 
 ---
 
 ## 🖥️ Screenshot
 
-> *Run the app locally to see the dashboard in action. Screenshot placeholder.*
+![Focus Bulletin Tracker dashboard](docs/screenshot.png)
 
 ---
 
@@ -38,11 +42,12 @@ An interactive Streamlit dashboard that tracks and visualizes the historical evo
 
 | Layer | Technology | Version |
 |-------|-----------|---------|
-| Dashboard framework | [Streamlit](https://streamlit.io) | 1.35 |
-| Interactive charts | [Plotly](https://plotly.com/python/) | 5.22 |
-| Data manipulation | [pandas](https://pandas.pydata.org) | 2.2 |
-| HTTP client | [requests](https://requests.readthedocs.io) | 2.32 |
-| Runtime | Python | 3.11 |
+| Dashboard framework | [Streamlit](https://streamlit.io) | 1.58 |
+| Interactive charts | [Plotly](https://plotly.com/python/) | 6.8 |
+| Data manipulation | [pandas](https://pandas.pydata.org) | 3.0 |
+| Columnar storage | [pyarrow](https://arrow.apache.org/docs/python/) | 24.0 |
+| HTTP client | [requests](https://requests.readthedocs.io) | 2.34 |
+| Runtime | Python | 3.14 |
 | Data source | BCB Olinda API | v1 |
 
 ---
@@ -51,14 +56,14 @@ An interactive Streamlit dashboard that tracks and visualizes the historical evo
 
 ### Prerequisites
 
-- Python 3.11 or higher
+- Python 3.14 or higher
 - Internet access to reach `olinda.bcb.gov.br`
 
 ### Installation
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/your-username/focus-bulletin-tracker.git
+git clone https://github.com/cavalcantihumberto/focus-bulletin-tracker.git
 cd focus-bulletin-tracker
 
 # 2. Create and activate a virtual environment
@@ -88,17 +93,37 @@ The dashboard opens automatically at **http://localhost:8501**.
 
 ```
 focus-tracker/
-├── app.py               # Main Streamlit dashboard (entry point)
+├── app.py                  # Main Streamlit dashboard (entry point)
 ├── data/
 │   ├── __init__.py
-│   └── fetcher.py       # BCB Olinda API client + 24h CSV cache
+│   ├── fetcher.py          # BCB Olinda API client + 3-layer cache
+│   └── processed/          # Pre-generated Parquet snapshots (per indicator/year)
 ├── analysis/
 │   ├── __init__.py
-│   └── metrics.py       # Revision, dispersion & summary calculations
-├── cache/               # Auto-generated: per-indicator CSV cache files
-├── requirements.txt     # Pinned dependencies
+│   └── metrics.py          # Revision, dispersion, summary & consensus-error calcs
+├── scripts/
+│   └── fetch_data.py       # Data pipeline — refreshes the Parquet snapshots
+├── tests/                  # pytest suite (fetcher + metrics)
+├── utils/
+│   └── logger.py           # Rotating daily file logger
+├── .github/
+│   └── workflows/          # GitHub Actions — weekly data refresh
+├── cache/                  # Auto-generated: local SQLite cache (focus_cache.db)
+├── requirements.txt        # Pinned dependencies
 ├── README.md
+├── LICENSE
 └── .gitignore
+```
+
+---
+
+## 🧪 Running tests
+
+The project ships with a [pytest](https://docs.pytest.org) suite covering the data
+fetcher and the metrics calculations.
+
+```bash
+pytest -v
 ```
 
 ---

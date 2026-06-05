@@ -17,6 +17,7 @@ env/
 # Cache de dados local (gerado automaticamente)
 cache/
 *.csv
+*.db
 
 # IDEs
 .vscode/
