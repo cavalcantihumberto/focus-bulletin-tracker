@@ -2,9 +2,10 @@ name: Weekly Data Refresh
 
 on:
   schedule:
-    # Toda segunda-feira às 12:00 UTC (09:00 BRT) — após o BCB publicar
-    # o Boletim Focus (segundas, ~08:25 BRT).
-    - cron: "0 12 * * 1"
+    # Toda segunda-feira às 14:00 UTC (11:00 BRT) — ~2h30 após o BCB publicar
+    # o Boletim Focus (segundas, ~08:25 BRT), dando margem para a API Olinda
+    # atualizar (leva ~1-2h após a publicação).
+    - cron: "0 14 * * 1"
   workflow_dispatch:            # permite disparo manual pela aba Actions
 
 permissions:
