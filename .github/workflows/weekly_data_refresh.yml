@@ -1,0 +1,50 @@
+name: Weekly Data Refresh
+
+on:
+  schedule:
+    # Toda segunda-feira às 12:00 UTC (09:00 BRT) — após o BCB publicar
+    # o Boletim Focus (segundas, ~08:25 BRT).
+    - cron: "0 12 * * 1"
+  workflow_dispatch:            # permite disparo manual pela aba Actions
+
+permissions:
+  contents: write               # necessário para o git push do commit de dados
+
+# Evita execuções sobrepostas (ex.: manual + agendada ao mesmo tempo)
+concurrency:
+  group: weekly-data-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Refresh Focus Bulletin data (incremental merge)
+        run: python scripts/refresh_data.py
+
+      - name: Commit and push updated data (only if changed)
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/processed/
+          if git diff --staged --quiet; then
+            echo "Sem mudanças nos dados — nada a commitar."
+          else
+            git commit -m "data: weekly Focus refresh [$(date -u '+%Y-%m-%d %H:%M UTC')]"
+            git push
+          fi

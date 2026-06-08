@@ -1,8 +1,6 @@
 name: Update Focus Bulletin Data
 
 on:
-  schedule:
-    - cron: "0 12 * * 1"   # toda segunda-feira às 12:00 UTC (09:00 Brasília)
   workflow_dispatch:          # permite disparo manual pela UI do GitHub
 
 permissions:
